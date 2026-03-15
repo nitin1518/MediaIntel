@@ -13,6 +13,7 @@ import hashlib
 import nltk
 import os
 import re
+from nltk.tokenize import sent_tokenize
 import concurrent.futures
 from streamlit_autorefresh import st_autorefresh
 
@@ -43,15 +44,16 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 1. ADVANCED KINETIC EXTRACTION ENGINE ---
+# --- 1. SENTENCE-LEVEL KINETIC EXTRACTION ENGINE ---
 class KineticExtractor:
     def __init__(self):
-        # Hunts for "Death toll stands at 4,500" OR "4,500 killed"
-        # The ([\d,]+) captures commas seamlessly.
-        self.casualty_regex = re.compile(r'(?:death toll|killed|dead|casualties|fatalities|claimed lives of)[^\d]{0,40}?([\d,]{2,})|([\d,]{2,})\s+(?:people\s+|civilians\s+|soldiers\s+)?(?:killed|dead|fatalities|casualties)', re.IGNORECASE)
+        # Expanded Regex to catch broader phrasing (e.g., "1,200 Israelis killed")
+        self.cas_regex = re.compile(r'(?:death toll|killed|dead|casualties)[^\d]{0,40}?([\d,]{1,6})|([\d,]{1,6})\s+(?:people|civilians|soldiers|israelis|palestinians|iranians|lebanese)?\s*(?:killed|dead|fatalities|casualties)', re.IGNORECASE)
+        self.proj_regex = re.compile(r'([\d,]{1,5})\s+(?:ballistic\s+|cruise\s+|kamikaze\s+)?(missiles?|rockets?|drones?|projectiles?|uavs?)\b', re.IGNORECASE)
         
-        # Hunts for "launched 180 missiles" OR "over 2,000 rockets fired"
-        self.projectile_regex = re.compile(r'([\d,]{1,5})\s+(?:ballistic\s+|cruise\s+)?(missiles?|rockets?|drones?|projectiles?)\b', re.IGNORECASE)
+        # Faction Geofencing
+        self.us_israel = ['israel', 'us ', 'usa', 'american', 'tel aviv', 'idf', 'netanyahu', 'jerusalem']
+        self.iran_proxies = ['iran', 'tehran', 'gaza', 'lebanon', 'palestinian', 'houthi', 'yemen', 'hezbollah', 'syria', 'irgc']
 
     def _clean_number(self, num_str):
         if not num_str: return 0
@@ -59,21 +61,44 @@ class KineticExtractor:
         except: return 0
 
     def extract_metrics(self, text):
-        m_fired, d_launched, casualties = 0, 0, 0
+        data = {
+            "US_Israel": {"casualties": 0, "missiles": 0, "drones": 0},
+            "Iran_Proxies": {"casualties": 0, "missiles": 0, "drones": 0},
+            "Global_Max": {"casualties": 0, "missiles": 0, "drones": 0}
+        }
         
-        # Extract Projectiles
-        for match in self.projectile_regex.findall(text):
-            num = self._clean_number(match[0])
-            if 'drone' in match[1].lower(): d_launched = max(d_launched, num) # Use max to prevent adding "180" and "180" to 360
-            else: m_fired = max(m_fired, num)
-                
-        # Extract Casualties (Hunting for both regex capture groups)
-        for match in self.casualty_regex.findall(text):
-            num1 = self._clean_number(match[0])
-            num2 = self._clean_number(match[1])
-            casualties = max(casualties, num1, num2) # The highest number found in the article is the cumulative toll
+        for sent in sent_tokenize(text):
+            sent_lower = sent.lower()
             
-        return {"missiles": m_fired, "drones": d_launched, "casualties": casualties}
+            # Identify which faction is the subject of the sentence
+            has_us = any(w in sent_lower for w in self.us_israel)
+            has_iran = any(w in sent_lower for w in self.iran_proxies)
+            
+            # Simple Proximity Routing: If one faction is mentioned, attribute the numbers to them.
+            faction = "Unknown"
+            if has_iran and not has_us: faction = "Iran_Proxies"
+            elif has_us and not has_iran: faction = "US_Israel"
+            
+            # Extract Casualties
+            for match in self.cas_regex.findall(sent):
+                c = max(self._clean_number(match[0]), self._clean_number(match[1]))
+                data["Global_Max"]["casualties"] = max(data["Global_Max"]["casualties"], c)
+                if faction != "Unknown":
+                    data[faction]["casualties"] = max(data[faction]["casualties"], c)
+                    
+            # Extract Projectiles
+            for match in self.proj_regex.findall(sent):
+                num = self._clean_number(match[0])
+                is_drone = 'drone' in match[1].lower() or 'uav' in match[1].lower()
+                
+                if is_drone:
+                    data["Global_Max"]["drones"] = max(data["Global_Max"]["drones"], num)
+                    if faction != "Unknown": data[faction]["drones"] = max(data[faction]["drones"], num)
+                else:
+                    data["Global_Max"]["missiles"] = max(data["Global_Max"]["missiles"], num)
+                    if faction != "Unknown": data[faction]["missiles"] = max(data[faction]["missiles"], num)
+                
+        return data
 
 # --- 2. MULTITHREADED TIER-1 SCRAPER ---
 def fetch_single_article(entry, fetch_full):
@@ -83,8 +108,8 @@ def fetch_single_article(entry, fetch_full):
     
     if fetch_full:
         try:
-            dl = trafilatura.fetch_url(link, timeout=4)
-            if dl: text += " " + (trafilatura.extract(dl) or "")[:4000] # Expanded context window to catch trackers
+            dl = trafilatura.fetch_url(link, timeout=5)
+            if dl: text += " " + (trafilatura.extract(dl) or "")[:4000]
         except: pass
         
     return {
@@ -95,7 +120,6 @@ def fetch_single_article(entry, fetch_full):
 
 @st.cache_data(ttl=300)
 def fetch_tier1_news(max_articles, fetch_full):
-    # Added specific queries to hunt for "Death Toll" live trackers
     feeds = [
         "https://news.google.com/rss/search?q=Israel+Iran+US+conflict+when:1d&hl=en-US&gl=US&ceid=US:en",
         "https://news.google.com/rss/search?q=Israel+Iran+war+death+toll+OR+casualties&hl=en-US&gl=US&ceid=US:en",
@@ -128,17 +152,20 @@ def fetch_tier1_news(max_articles, fetch_full):
     df = df.drop_duplicates(subset="hash").sort_values("datetime", ascending=False)
     
     kinetic = KineticExtractor()
-    m_list, d_list, c_list = [], [], []
-    
+    parsed_data = []
     for text in df["text"]:
-        k_data = kinetic.extract_metrics(text)
-        m_list.append(k_data["missiles"])
-        d_list.append(k_data["drones"])
-        c_list.append(k_data["casualties"])
+        parsed_data.append(kinetic.extract_metrics(text))
         
-    df["reported_missiles"] = m_list
-    df["reported_drones"] = d_list
-    df["reported_casualties"] = c_list
+    # Flatten JSON to DataFrame columns
+    df["tot_cas"] = [d["Global_Max"]["casualties"] for d in parsed_data]
+    df["tot_mis"] = [d["Global_Max"]["missiles"] for d in parsed_data]
+    df["tot_dro"] = [d["Global_Max"]["drones"] for d in parsed_data]
+    
+    df["us_cas"] = [d["US_Israel"]["casualties"] for d in parsed_data]
+    df["ir_cas"] = [d["Iran_Proxies"]["casualties"] for d in parsed_data]
+    
+    df["us_mis"] = [d["US_Israel"]["missiles"] for d in parsed_data]
+    df["ir_mis"] = [d["Iran_Proxies"]["missiles"] for d in parsed_data]
 
     return df
 
@@ -161,19 +188,17 @@ if not has_data:
     st.warning("⚠️ Telemetry Offline: Awaiting network sync.")
     st.stop()
 
-# --- GLOBAL MAXIMUM ALGORITHM ---
-# Instead of adding daily numbers (which causes double counting) or taking daily maxes,
-# A war's death toll is cumulative. We find the absolute highest number reported across all articles.
-total_missiles = df["reported_missiles"].max()
-total_drones = df["reported_drones"].max()
-total_casualties = df["reported_casualties"].max()
+# --- GLOBAL MAXIMUMS ---
+total_missiles = df["tot_mis"].max()
+total_drones = df["tot_dro"].max()
+total_casualties = df["tot_cas"].max()
 
 # --- MACRO KPIs ---
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.markdown(f'<div class="metric-card"><div class="metric-title">Intel Signals</div><div class="metric-value">{len(df)}</div></div>', unsafe_allow_html=True)
-k2.markdown(f'<div class="metric-card"><div class="metric-title">Missiles (Est. Max)</div><div class="metric-value" style="color: #ff7b72;">{int(total_missiles):,}</div></div>', unsafe_allow_html=True)
-k3.markdown(f'<div class="metric-card"><div class="metric-title">Drones (Est. Max)</div><div class="metric-value" style="color: #d29922;">{int(total_drones):,}</div></div>', unsafe_allow_html=True)
-k4.markdown(f'<div class="metric-card"><div class="metric-title">Casualties (Toll)</div><div class="metric-value" style="color: #8b949e;">{int(total_casualties):,}</div></div>', unsafe_allow_html=True)
+k2.markdown(f'<div class="metric-card"><div class="metric-title">Missiles Fired</div><div class="metric-value" style="color: #ff7b72;">{int(total_missiles):,}</div></div>', unsafe_allow_html=True)
+k3.markdown(f'<div class="metric-card"><div class="metric-title">Drones Launched</div><div class="metric-value" style="color: #d29922;">{int(total_drones):,}</div></div>', unsafe_allow_html=True)
+k4.markdown(f'<div class="metric-card"><div class="metric-title">Reported Casualties</div><div class="metric-value" style="color: #8b949e;">{int(total_casualties):,}</div></div>', unsafe_allow_html=True)
 k5.markdown(f'<div class="metric-card"><div class="metric-title">System Status</div><div class="metric-value" style="font-size: 1.2rem;"><span class="live-dot"></span>LIVE<br><span style="font-size: 0.8rem; color: #8b949e;">{datetime.now(IST).strftime("%H:%M IST")}</span></div></div>', unsafe_allow_html=True)
 
 st.write("---")
@@ -182,14 +207,38 @@ st.write("---")
 left, right = st.columns([2, 1], gap="large")
 
 with left:
-    st.subheader("🔥 Daily Reported Maxima (Media Consensus)")
-    daily_kinetic = df.groupby("date").agg({"reported_missiles": "max", "reported_drones": "max", "reported_casualties": "max"}).reset_index()
+    tab1, tab2 = st.tabs(["📉 Casualty Escalation Trend", "🔥 Faction Projectile Action"])
     
-    fig1 = px.bar(daily_kinetic, x="date", y=["reported_missiles", "reported_drones"], 
-                  title="Projectiles Reported Per Day",
-                  color_discrete_map={"reported_missiles": "#ff7b72", "reported_drones": "#d29922"})
-    fig1.update_layout(template="plotly_dark", barmode='group', hovermode="x unified", legend_title_text="Weapon Type")
-    st.plotly_chart(fig1, use_container_width=True)
+    with tab1:
+        st.subheader("Cumulative Casualties Over Time (Media Consensus)")
+        # For a cumulative trend, we plot the maximum reported casualties per day
+        daily_cas = df.groupby("date")["tot_cas"].max().reset_index()
+        # Sort by date and enforce a cumulative maximum so the line never drops down
+        daily_cas = daily_cas.sort_values("date")
+        daily_cas["cumulative_max"] = daily_cas["tot_cas"].cummax()
+        
+        fig1 = px.line(daily_cas, x="date", y="cumulative_max", markers=True, template="plotly_dark")
+        fig1.update_traces(line_color="#ff7b72", line_width=4, fill='tozeroy', fillcolor='rgba(255, 123, 114, 0.1)')
+        fig1.update_layout(yaxis_title="Total Reported Casualties", hovermode="x unified", xaxis_title="")
+        st.plotly_chart(fig1, use_container_width=True)
+
+    with tab2:
+        st.subheader("Attributed Projectiles by Faction (Sentence Proximity)")
+        # Calculate faction maxes
+        us_proj = df["us_mis"].max() + df["us_dro"].max() if "us_dro" in df.columns else df["us_mis"].max()
+        ir_proj = df["ir_mis"].max() + df["ir_dro"].max() if "ir_dro" in df.columns else df["ir_mis"].max()
+        
+        faction_data = pd.DataFrame({
+            "Faction": ["US/Israel (Defensive/Offensive)", "Iran/Proxies (Offensive)"],
+            "Projectiles Identified": [us_proj, ir_proj]
+        })
+        
+        fig2 = px.bar(faction_data, x="Faction", y="Projectiles Identified", color="Faction", 
+                      color_discrete_map={"US/Israel (Defensive/Offensive)": "#58a6ff", "Iran/Proxies (Offensive)": "#ff7b72"})
+        fig2.update_layout(template="plotly_dark", showlegend=False)
+        st.plotly_chart(fig2, use_container_width=True)
+
+        st.caption("*Note: Projectiles are attributed mathematically based on proximity to faction keywords in the raw text.*")
 
     st.subheader("📊 Macro Economic Shock Tracker")
     mc1, mc2, mc3 = st.columns(3)
@@ -213,15 +262,28 @@ with left:
             except: st.caption(f"{name} Data Offline")
 
 with right:
+    st.subheader("⚖️ Faction Casualty Breakdown")
+    
+    us_cas = df["us_cas"].max()
+    ir_cas = df["ir_cas"].max()
+    
+    if us_cas > 0 or ir_cas > 0:
+        pie_df = pd.DataFrame({"Faction": ["US/Israel", "Iran/Proxies"], "Casualties": [us_cas, ir_cas]})
+        fig_pie = px.pie(pie_df, values='Casualties', names='Faction', hole=0.6, 
+                         color='Faction', color_discrete_map={"US/Israel": "#58a6ff", "Iran/Proxies": "#ff7b72"})
+        fig_pie.update_layout(template="plotly_dark", margin=dict(t=0, b=0, l=0, r=0), height=200)
+        st.plotly_chart(fig_pie, use_container_width=True)
+    else:
+        st.info("Awaiting explicit faction-attributed casualty data.")
+
     st.subheader("📡 High-Yield Tracker Reports")
-    # Show headlines that have the highest kinetic data
-    kinetic_df = df[(df['reported_missiles'] > 0) | (df['reported_casualties'] > 0)].sort_values(by='reported_casualties', ascending=False).head(8)
-    if kinetic_df.empty: kinetic_df = df.head(8)
+    kinetic_df = df[(df['tot_mis'] > 0) | (df['tot_cas'] > 0)].sort_values(by='tot_cas', ascending=False).head(7)
+    if kinetic_df.empty: kinetic_df = df.head(7)
     
     for _, r in kinetic_df.iterrows():
         tags = []
-        if r['reported_missiles'] > 0: tags.append(f"🚀 {int(r['reported_missiles']):,} Missiles")
-        if r['reported_casualties'] > 0: tags.append(f"⚠️ {int(r['reported_casualties']):,} Casualties")
+        if r['tot_mis'] > 0: tags.append(f"🚀 {int(r['tot_mis']):,} Missiles")
+        if r['tot_cas'] > 0: tags.append(f"⚠️ {int(r['tot_cas']):,} Casualties")
         tag_str = " | ".join(tags)
         
         st.markdown(f"""

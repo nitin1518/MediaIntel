@@ -305,7 +305,8 @@ with tab3:
     st.plotly_chart(fig, use_container_width=True)
 
 with tab4:
-    st.subheader("Live Market Impact")
+    st.subheader("Live Market Impact (Oil, S&P 500, Gold)")
+
     c1, c2, c3 = st.columns(3)
     assets = {
         "Oil (WTI)": "CL=F",
@@ -315,12 +316,43 @@ with tab4:
 
     for name, ticker in assets.items():
         with (c1 if name == "Oil (WTI)" else c2 if name == "S&P 500" else c3):
-            data = yf.download(ticker, period="14d", progress=False)
-            if not data.empty:
-                last = data["Close"].iloc[-1]
-                delta = last - data["Close"].iloc[-2] if len(data) > 1 else 0
-                st.metric(name, f"{last:.2f}" if "Oil" in name or "Gold" in name else f"{int(last)}", f"{delta:+.2f}")
-                st.line_chart(data["Close"], use_container_width=True, height=140)
+            try:
+                data = yf.download(ticker, period="14d", progress=False, timeout=10)
+
+                if data.empty or len(data) < 2:
+                    st.warning(f"No recent data for {name} ({ticker})")
+                    st.caption("Possible weekend/holiday or temporary Yahoo issue")
+                    continue
+
+                last_close = data["Close"].iloc[-1]
+                prev_close = data["Close"].iloc[-2]
+
+                delta = last_close - prev_close
+
+                # Format value nicely
+                if "Oil" in name or "Gold" in name:
+                    value_str = f"${last_close:,.2f}"
+                else:
+                    value_str = f"{last_close:,.0f}"
+
+                delta_str = f"{delta:+,.2f}"
+
+                st.metric(
+                    label=name,
+                    value=value_str,
+                    delta=delta_str,
+                    delta_color="normal"  # or "off" if you don't want color
+                )
+
+                # Plot only if enough data
+                if len(data) >= 5:
+                    st.line_chart(data["Close"], use_container_width=True, height=140)
+                else:
+                    st.caption("Limited data points available")
+
+            except Exception as e:
+                st.error(f"Error fetching {name}: {str(e)}")
+                st.caption("yfinance may be temporarily unavailable – try refreshing")
 
 # ───────────────────────────────
 # Auto-refresh logic

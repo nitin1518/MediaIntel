@@ -103,14 +103,28 @@ def source_weight(domain: str) -> float:
     return 0.25
 
 
-def parse_num(raw: str) -> int:
-    s = raw.lower().strip()
+def parse_num(raw) -> int | None:
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return int(float(raw))
+
+    s = str(raw).strip().lower()
+    if not s:
+        return None
+
+    s = s.replace('+', '')
+    s = re.sub(r'^(about|around|nearly|some|more than|over|at least|roughly|up to)\s+', '', s)
+
     if 'hundred' in s:
         return 200
     if 'thousand' in s:
         return 2000
-    s = re.sub(r'^(about|around|nearly|some|more than|over|at least|roughly|up to)\s+', '', s)
-    return int(float(s.replace(',', '')))
+
+    try:
+        return int(float(s.replace(',', '')))
+    except Exception:
+        return None
 
 
 def parse_money_m(raw_num: str, unit: str | None) -> float:
@@ -246,19 +260,19 @@ def extract_facts(df: pd.DataFrame) -> pd.DataFrame:
                         drone_val, missile_val = parse_num(first), parse_num(second)
                     else:
                         missile_val, drone_val = parse_num(first), parse_num(second)
-                    if missile_val <= 2000:
+                    if missile_val is not None and missile_val <= 2000:
                         facts.append({'metric':'missiles','value':missile_val,'actor':actor,'impacted':'Global','source':row['source'],'domain':dom,'url':row['url'],'date':row['date'],'sentence':ctx,'weight':weight})
-                    if drone_val <= 5000:
+                    if drone_val is not None and drone_val <= 5000:
                         facts.append({'metric':'drones','value':drone_val,'actor':actor,'impacted':'Global','source':row['source'],'domain':dom,'url':row['url'],'date':row['date'],'sentence':ctx,'weight':weight})
 
             if not INVENTORY_CONTEXT.search(lctx):
                 for m in MISSILE_RE.finditer(ctx):
                     v = parse_num(m.group(1))
-                    if v <= 2000:
+                    if v is not None and v <= 2000:
                         facts.append({'metric':'missiles','value':v,'actor':actor,'impacted':'Global','source':row['source'],'domain':dom,'url':row['url'],'date':row['date'],'sentence':ctx,'weight':weight})
                 for m in DRONE_RE.finditer(ctx):
                     v = parse_num(m.group(1))
-                    if v <= 5000:
+                    if v is not None and v <= 5000:
                         facts.append({'metric':'drones','value':v,'actor':actor,'impacted':'Global','source':row['source'],'domain':dom,'url':row['url'],'date':row['date'],'sentence':ctx,'weight':weight})
 
             for m in DEATH_RE.finditer(ctx):

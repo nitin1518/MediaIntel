@@ -6,4 +6,4 @@ plotly
 vaderSentiment
 python-dateutil
 nltk>=3.8.1
-yfinance>=0.2.40
+yfinance>=0.2.40,<0.3.0

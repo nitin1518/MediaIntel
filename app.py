@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
+import pytz  # <--- ADDED THIS
 import feedparser
 from dateutil import parser
 import trafilatura
@@ -15,6 +16,9 @@ import re
 from nltk.tokenize import sent_tokenize
 import concurrent.futures
 from streamlit_autorefresh import st_autorefresh
+
+# <--- ADDED THIS TO DEFINE THE TIMEZONE --->
+IST = pytz.timezone('Asia/Kolkata') 
 
 # --- NLTK CLOUD FIX ---
 nltk.download('punkt', quiet=True)

@@ -317,19 +317,22 @@ with tab4:
     for name, ticker in assets.items():
         with (c1 if name == "Oil (WTI)" else c2 if name == "S&P 500" else c3):
             try:
-                data = yf.download(ticker, period="14d", progress=False, timeout=10)
+                # Use Ticker.history for more stable single-ticker fetch
+                ticker_obj = yf.Ticker(ticker)
+                data = ticker_obj.history(period="14d", timeout=10)
 
                 if data.empty or len(data) < 2:
-                    st.warning(f"No recent data for {name} ({ticker})")
-                    st.caption("Possible weekend/holiday or temporary Yahoo issue")
+                    st.warning(f"No recent data available for {name} ({ticker})")
+                    st.caption("Possible weekend/holiday, market closed, or temporary Yahoo Finance delay")
                     continue
 
-                last_close = data["Close"].iloc[-1]
-                prev_close = data["Close"].iloc[-2]
+                # Explicitly extract scalar values (prevents Series formatting issues)
+                last_close = float(data["Close"].iloc[-1])   # force float scalar
+                prev_close = float(data["Close"].iloc[-2])
 
                 delta = last_close - prev_close
 
-                # Format value nicely
+                # Format safely (no direct Series formatting)
                 if "Oil" in name or "Gold" in name:
                     value_str = f"${last_close:,.2f}"
                 else:
@@ -340,19 +343,28 @@ with tab4:
                 st.metric(
                     label=name,
                     value=value_str,
-                    delta=delta_str,
-                    delta_color="normal"  # or "off" if you don't want color
+                    delta=delta_str
                 )
 
-                # Plot only if enough data
+                # Simple line chart (only if enough points)
                 if len(data) >= 5:
                     st.line_chart(data["Close"], use_container_width=True, height=140)
                 else:
-                    st.caption("Limited data points available")
+                    st.caption("Not enough data points for chart")
 
             except Exception as e:
-                st.error(f"Error fetching {name}: {str(e)}")
-                st.caption("yfinance may be temporarily unavailable – try refreshing")
+                error_msg = str(e)
+                if "unsupported format" in error_msg.lower():
+                    st.warning(f"Formatting issue for {name} – showing raw value")
+                    # Fallback raw display if formatting fails
+                    try:
+                        raw_last = data["Close"].iloc[-1]
+                        st.metric(name, f"Raw: {raw_last}", "N/A")
+                    except:
+                        st.metric(name, "Error", "N/A")
+                else:
+                    st.error(f"Error fetching {name}: {error_msg}")
+                st.caption("Try refreshing or check later – yfinance is unofficial")
 
 # ───────────────────────────────
 # Auto-refresh logic

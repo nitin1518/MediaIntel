@@ -205,6 +205,20 @@ LOCAL_MONEY_RE = re.compile(
     re.I,
 )
 
+# Combined projectile patterns like "nearly 300 ballistic missiles and hundreds of drones"
+# or "hundreds of drones and nearly 300 missiles".
+COMBINED_PROJECTILE_RE = re.compile(
+    rf"(?P<prefix1>over|more than|at least|around|about|roughly|nearly|almost|up to|as many as)?\s*"
+    rf"(?P<num1>{NUMERIC_TOKEN}|[a-z][a-z\-\s]*?)\s*(?P<plus1>\+)?\s*"
+    rf"(?:ballistic\s+|cruise\s+|kamikaze\s+)?(?P<unit1>missiles?|rockets?|projectiles?|drones?|uavs?|shaheds?)\b"
+    rf"(?:[^\.;:!?]{{0,40}}?)\band\b(?:[^\.;:!?]{{0,20}}?)"
+    rf"(?P<prefix2>over|more than|at least|around|about|roughly|nearly|almost|up to|as many as)?\s*"
+    rf"(?P<num2>{NUMERIC_TOKEN}|[a-z][a-z\-\s]*?)\s*(?P<plus2>\+)?\s*"
+    rf"(?:ballistic\s+|cruise\s+|kamikaze\s+)?(?P<unit2>missiles?|rockets?|projectiles?|drones?|uavs?|shaheds?)\b",
+    re.I,
+)
+
+
 
 def pretty_source_from_url(url: str) -> str:
     netloc = urlparse(url).netloc.lower().replace("www.", "")

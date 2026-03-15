@@ -88,7 +88,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ────────────────────────────────────────────────
-# Enhanced Kinetic Metrics Extractor
+# Enhanced Kinetic Metrics Extractor – FIXED REGEX
 # ────────────────────────────────────────────────
 class KineticExtractor:
     def __init__(self):
@@ -101,8 +101,8 @@ class KineticExtractor:
                 re.IGNORECASE),
             "casualties": re.compile(
                 r'(?:(?:killed|dead|fatalit(?:ies|y)|died|perished|slain|lost their lives|wounded|injured|hurt|casualt(?:ies|y)|victims?)\s*(?:and\s*)?(?:at least|more than|over|approximately)?\s*(\d{1,5})(?:\s*(?:people|civilians|soldiers|militants|personnel|troops|women|children))?|'
-                r'(?:at least|more than|over|approximately)\s*(\d{1,5})\s*(?:people|civilians|soldiers|militants|personnel|troops|killed|dead|wounded|injured)',
-                re.IGNORECASE),
+                r'(?:at least|more than|over|approximately)\s*(\d{1,5})\s*(?:people|civilians|soldiers|militants|personnel|troops|killed|dead|wounded|injured))',
+                re.IGNORECASE | re.DOTALL),
             "intercepted": re.compile(
                 r'(?:intercepted|shot down|destroyed|neutralized|downed|engaged|taken out)\s*(\d{1,4})\s*(?:incoming\s*)?(?:ballistic|cruise|missiles?|drones?|projectiles?)',
                 re.IGNORECASE)
@@ -203,7 +203,7 @@ def fetch_tier1_news(max_articles, fetch_full):
         k = extractor.extract_metrics(text)
         results.append((sent, k["missiles"], k["drones"], k["casualties"], k["intercepted"]))
 
-    df["sentiment"]          = [r[0] for r in results]
+    df["sentiment"]           = [r[0] for r in results]
     df["reported_missiles"]   = [r[1] for r in results]
     df["reported_drones"]     = [r[2] for r in results]
     df["reported_casualties"] = [r[3] for r in results]

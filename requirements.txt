@@ -6,4 +6,4 @@ plotly
 vaderSentiment
 yfinance
 python-dateutil
-nltk
+nltk>=3.8.1

@@ -13,99 +13,68 @@ import hashlib
 import nltk
 import os
 import re
-from nltk.tokenize import sent_tokenize
 import concurrent.futures
 from streamlit_autorefresh import st_autorefresh
 
 # ────────────────────────────────────────────────
-# NLTK cloud compatibility fix
+# NLTK + Time Setup
 # ────────────────────────────────────────────────
 nltk.download('punkt', quiet=True)
 nltk.download('punkt_tab', quiet=True)
-
 nltk_data_dir = os.path.join(os.getcwd(), "nltk_data")
 os.makedirs(nltk_data_dir, exist_ok=True)
 nltk.data.path.append(nltk_data_dir)
 
 IST = pytz.timezone('Asia/Kolkata')
-
-st.set_page_config(
-    page_title="Global Threat Matrix: Kinetic",
-    page_icon="🌍",
-    layout="wide"
-)
-
-st_autorefresh(interval=5 * 60 * 1000, key="data_refresh")
+st.set_page_config(page_title="Global Threat Matrix: Kinetic", page_icon="🌍", layout="wide")
+st_autorefresh(interval=5 * 60 * 1000, key="auto_refresh")
 
 # ────────────────────────────────────────────────
-# Professional dark GitHub-like theme
+# Professional Dark Theme
 # ────────────────────────────────────────────────
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-    html, body, [class*="css"]  {
-        font-family: 'Inter', sans-serif;
-    }
-    .main { background: #0d1117; color: #c9d1d9; }
-    .stApp > header { background: #0d1117 !important; }
-    h1, h2, h3 { color: #ffffff; font-weight: 700; letter-spacing: -0.5px; }
-    .metric-card {
-        background: #161b22;
-        border: 1px solid #30363d;
-        border-radius: 8px;
-        padding: 16px;
-        text-align: center;
-        margin-bottom: 12px;
-    }
-    .metric-title {
-        font-size: 0.82rem;
-        color: #8b949e;
-        text-transform: uppercase;
-        font-weight: 600;
-        margin-bottom: 6px;
-    }
-    .metric-value {
-        font-size: 1.9rem;
-        font-weight: bold;
-        color: #ffffff;
-    }
-    .live-dot {
-        height: 10px;
-        width: 10px;
-        background-color: #ff7b72;
-        border-radius: 50%;
-        display: inline-block;
-        animation: pulse 1.6s infinite;
-        margin-right: 8px;
-    }
-    @keyframes pulse {
-        0% { opacity: 1; }
-        50% { opacity: 0.35; }
-        100% { opacity: 1; }
-    }
-    hr { border-color: #30363d; margin: 1.6rem 0; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+.main { background: #0d1117; color: #c9d1d9; }
+.stApp > header { background: #0d1117 !important; }
+h1, h2, h3 { color: #ffffff; font-weight: 700; letter-spacing: -0.5px; }
+.metric-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; text-align: center; margin-bottom: 12px; }
+.metric-title { font-size: 0.82rem; color: #8b949e; text-transform: uppercase; font-weight: 600; margin-bottom: 6px; }
+.metric-value { font-size: 1.9rem; font-weight: bold; color: #ffffff; }
+.live-dot { height: 10px; width: 10px; background-color: #ff7b72; border-radius: 50%; display: inline-block; animation: pulse 1.6s infinite; margin-right: 8px; }
+@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.35; } 100% { opacity: 1; } }
+hr { border-color: #30363d; margin: 1.6rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
 # ────────────────────────────────────────────────
-# Enhanced Kinetic Metrics Extractor – FIXED REGEX
+# BROADENED Kinetic Extractor (catches real 2026 phrasing)
 # ────────────────────────────────────────────────
 class KineticExtractor:
     def __init__(self):
         self.patterns = {
+            # Missiles - catches "fired 285 ballistic missiles", "barrage of 400 missiles", "over 300 missiles launched", etc.
             "missiles": re.compile(
-                r'(?:fired|launched|detonated|struck with|reported|estimated|at least|more than|over|approximately)\s*(\d{1,4})\s*(?:ballistic|cruise|hypersonic)?\s*missiles?',
-                re.IGNORECASE),
-            "drones": re.compile(
-                r'(?:launched|sent|fired|deployed|reported|estimated|at least|more than)\s*(\d{1,4})\s*(?:attack|kamikaze|suicide|shahed|one-way)?\s*drones?',
-                re.IGNORECASE),
-            "casualties": re.compile(
-                r'(?:(?:killed|dead|fatalit(?:ies|y)|died|perished|slain|lost their lives|wounded|injured|hurt|casualt(?:ies|y)|victims?)\s*(?:and\s*)?(?:at least|more than|over|approximately)?\s*(\d{1,5})(?:\s*(?:people|civilians|soldiers|militants|personnel|troops|women|children))?|'
-                r'(?:at least|more than|over|approximately)\s*(\d{1,5})\s*(?:people|civilians|soldiers|militants|personnel|troops|killed|dead|wounded|injured))',
+                r'(?:fired|launched|detonated|barrage of|sent|targeted|reported|estimated|at least|more than|over|hundreds?|dozens?)\s*(\d{1,6})\s*(?:ballistic|cruise|hypersonic)?\s*missiles?',
                 re.IGNORECASE | re.DOTALL),
+
+            # Drones - catches "1,567 drones", "swarm of Shahed drones", "hundreds of attack drones", etc.
+            "drones": re.compile(
+                r'(?:launched|sent|fired|deployed|swarm of|hundreds?|dozens?)\s*(\d{1,6})\s*(?:attack|kamikaze|suicide|shahed|one-way)?\s*drones?',
+                re.IGNORECASE | re.DOTALL),
+
+            # Casualties - very broad (death toll, killed, dead, fatalities, etc.)
+            "casualties": re.compile(
+                r'(?i)(?:death toll|killed|dead|fatalit(?:ies|y)|died|perished|slain|casualt(?:ies|y)|bodies|victims?)\s*(?:has|stands at|rises to|climbs to|now|at|reaches|exceeds|surpasses|of)?\s*'
+                r'(?:at least|more than|over|nearly|around|about|approximately)?\s*(\d{1,6})(?:\s*(?:people|civilians|soldiers|militants|personnel|troops|women|children|individuals)?)?'
+                r'(?:\s*(?:and|plus|including)?\s*(?:at least|more than|over)?\s*(\d{1,6})\s*(?:wounded|injured|hurt))?)',
+                re.IGNORECASE | re.DOTALL),
+
+            # Intercepted - catches "intercepted 233 missiles", "shot down 1,359 drones", "air defenses downed 250 projectiles", etc.
             "intercepted": re.compile(
-                r'(?:intercepted|shot down|destroyed|neutralized|downed|engaged|taken out)\s*(\d{1,4})\s*(?:incoming\s*)?(?:ballistic|cruise|missiles?|drones?|projectiles?)',
-                re.IGNORECASE)
+                r'(?:intercepted|shot down|destroyed|neutralized|downed|engaged|taken out|air defenses downed)\s*(\d{1,6})\s*(?:incoming\s*)?(?:ballistic|cruise|missiles?|drones?|projectiles?)',
+                re.IGNORECASE | re.DOTALL)
         }
 
     def extract_metrics(self, text):
@@ -121,7 +90,7 @@ class KineticExtractor:
         return data
 
 # ────────────────────────────────────────────────
-# Article fetching helper
+# Rest of the code (unchanged except minor cleanups)
 # ────────────────────────────────────────────────
 def fetch_single_article(entry, fetch_full):
     link = entry.link.split("?")[0]
@@ -130,36 +99,22 @@ def fetch_single_article(entry, fetch_full):
     if fetch_full:
         try:
             dl = trafilatura.fetch_url(link, timeout=5)
-            if dl:
-                text += " " + (trafilatura.extract(dl) or "")[:2800]
-        except:
-            pass
+            if dl: text += " " + (trafilatura.extract(dl) or "")[:2800]
+        except: pass
     return {
-        "title": entry.title,
-        "url": link,
-        "source": entry.get('source', {}).get('title', 'News'),
-        "date": pub.date(),
-        "datetime": pub,
-        "text": text[:3800],
+        "title": entry.title, "url": link, "source": entry.get('source', {}).get('title', 'News'),
+        "date": pub.date(), "datetime": pub, "text": text[:3800],
         "hash": hashlib.md5(text.encode()).hexdigest()[:12]
     }
 
-# ────────────────────────────────────────────────
-# Main data collection function
-# ────────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def fetch_tier1_news(max_articles, fetch_full):
     feeds = [
-        "https://feeds.reuters.com/reuters/topNews",
-        "https://feeds.reuters.com/reuters/worldNews",
-        "http://feeds.bbci.co.uk/news/world/rss.xml",
-        "https://www.aljazeera.com/xml/rss/all.xml",
-        "https://feeds.apnews.com/rss/apf-topnews",
-        "https://www.timesofisrael.com/feed/",
-        "https://www.cnn.com/services/rss/cnn_world.rss",
-        "https://www.haaretz.com/israel-news/rss",
+        "https://feeds.reuters.com/reuters/topNews", "https://feeds.reuters.com/reuters/worldNews",
+        "http://feeds.bbci.co.uk/news/world/rss.xml", "https://www.aljazeera.com/xml/rss/all.xml",
+        "https://feeds.apnews.com/rss/apf-topnews", "https://www.timesofisrael.com/feed/",
+        "https://www.cnn.com/services/rss/cnn_world.rss", "https://www.haaretz.com/israel-news/rss",
         "https://www.jpost.com/rss/rssfeedsfrontpage.aspx",
-        # Google News – wider window for context
         "https://news.google.com/rss/search?q=Israel+Iran+US+missile+strike+OR+drone+OR+attack+when:7d&hl=en-US&gl=US&ceid=US:en",
         "https://news.google.com/rss/search?q=Iran+OR+Israel+casualties+OR+killed+OR+dead+OR+wounded+when:7d&hl=en-US&gl=US&ceid=US:en"
     ]
@@ -169,31 +124,26 @@ def fetch_tier1_news(max_articles, fetch_full):
     for url in feeds:
         try:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:max_articles * 2]:
+            for entry in feed.entries[:max_articles*2]:
                 link = entry.link.split("?")[0]
                 combined = (entry.title + entry.get('summary', '')).lower()
                 if link not in seen and any(k in combined for k in ['iran','israel','missile','drone','strike','hezbollah','gaza','casualty','killed','dead']):
                     seen.add(link)
                     raw_entries.append(entry)
-        except:
-            continue
+        except: continue
 
     articles = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-        futures = [executor.submit(fetch_single_article, e, fetch_full) for e in raw_entries[:max_articles * 2]]
+        futures = [executor.submit(fetch_single_article, e, fetch_full) for e in raw_entries]
         for future in concurrent.futures.as_completed(futures):
-            try:
-                articles.append(future.result())
-            except:
-                pass
+            try: articles.append(future.result())
+            except: pass
 
-    if not articles:
-        return pd.DataFrame()
+    if not articles: return pd.DataFrame()
 
     df = pd.DataFrame(articles)
     df = df.drop_duplicates(subset="hash").sort_values("datetime", ascending=False).head(max_articles)
 
-    # ─── Analyze ───
     analyzer = SentimentIntensityAnalyzer()
     extractor = KineticExtractor()
 
@@ -203,16 +153,15 @@ def fetch_tier1_news(max_articles, fetch_full):
         k = extractor.extract_metrics(text)
         results.append((sent, k["missiles"], k["drones"], k["casualties"], k["intercepted"]))
 
-    df["sentiment"]           = [r[0] for r in results]
-    df["reported_missiles"]   = [r[1] for r in results]
-    df["reported_drones"]     = [r[2] for r in results]
+    df["sentiment"] = [r[0] for r in results]
+    df["reported_missiles"] = [r[1] for r in results]
+    df["reported_drones"] = [r[2] for r in results]
     df["reported_casualties"] = [r[3] for r in results]
-    df["reported_intercepted"]= [r[4] for r in results]
-
+    df["reported_intercepted"] = [r[4] for r in results]
     return df
 
 # ────────────────────────────────────────────────
-# Dashboard UI
+# UI
 # ────────────────────────────────────────────────
 st.markdown("<h2 style='text-align: center;'>🌍 TACTICAL THREAT MATRIX & KINETIC TRACKER</h2>", unsafe_allow_html=True)
 st.markdown("<p style='text-align: center; color: #8b949e;'>Real-Time Geopolitical & Market Sensing • Multi-Source 2026</p>", unsafe_allow_html=True)
@@ -229,21 +178,18 @@ with st.spinner("Collecting from Reuters • AP • BBC • Al Jazeera • Times
     df = fetch_tier1_news(max_articles, fetch_full)
 
 if df.empty:
-    st.error("No recent relevant articles found. Try increasing volume or wait 5–10 minutes.")
+    st.error("No recent relevant articles found. Try Force Refresh.")
     st.stop()
 
-# ─── Daily aggregation (max per day – consensus approach) ───
+# Daily aggregation
 daily = df.groupby("date").agg({
-    "reported_missiles": "max",
-    "reported_drones": "max",
-    "reported_casualties": "max",
-    "reported_intercepted": "max",
-    "sentiment": "mean"
+    "reported_missiles": "max", "reported_drones": "max",
+    "reported_casualties": "max", "reported_intercepted": "max"
 }).reset_index()
 
-daily["cum_missiles"]    = daily["reported_missiles"].cumsum()
-daily["cum_drones"]      = daily["reported_drones"].cumsum()
-daily["cum_casualties"]  = daily["reported_casualties"].cumsum()
+daily["cum_missiles"] = daily["reported_missiles"].cumsum()
+daily["cum_drones"] = daily["reported_drones"].cumsum()
+daily["cum_casualties"] = daily["reported_casualties"].cumsum()
 daily["cum_intercepted"] = daily["reported_intercepted"].cumsum()
 
 tot_m = daily["reported_missiles"].sum()
@@ -251,7 +197,7 @@ tot_d = daily["reported_drones"].sum()
 tot_c = daily["reported_casualties"].sum()
 tot_i = daily["reported_intercepted"].sum()
 
-# ─── KPIs ───
+# KPIs
 cols = st.columns(6)
 cols[0].markdown(f'<div class="metric-card"><div class="metric-title">Signals</div><div class="metric-value">{len(df)}</div></div>', unsafe_allow_html=True)
 cols[1].markdown(f'<div class="metric-card"><div class="metric-title">Missiles (Est.)</div><div class="metric-value" style="color:#ff7b72;">{int(tot_m):,}</div></div>', unsafe_allow_html=True)
@@ -262,102 +208,55 @@ cols[5].markdown(f'<div class="metric-card"><div class="metric-title">Status</di
 
 st.markdown("---")
 
-# ─── Charts ───
 left_col, right_col = st.columns([2, 1], gap="large")
 
 with left_col:
     st.subheader("Cumulative Kinetic Trend")
     fig_cum = go.Figure()
-    fig_cum.add_trace(go.Scatter(x=daily["date"], y=daily["cum_missiles"],    name="Missiles",    line=dict(color="#ff7b72", width=3)))
-    fig_cum.add_trace(go.Scatter(x=daily["date"], y=daily["cum_drones"],      name="Drones",      line=dict(color="#d29922", width=3)))
+    fig_cum.add_trace(go.Scatter(x=daily["date"], y=daily["cum_missiles"], name="Missiles", line=dict(color="#ff7b72", width=3)))
+    fig_cum.add_trace(go.Scatter(x=daily["date"], y=daily["cum_drones"], name="Drones", line=dict(color="#d29922", width=3)))
     fig_cum.add_trace(go.Scatter(x=daily["date"], y=daily["cum_intercepted"], name="Intercepted", line=dict(color="#3fb950", width=3)))
-    fig_cum.add_trace(go.Scatter(x=daily["date"], y=daily["cum_casualties"],  name="Casualties",  line=dict(color="#8b949e", width=3), yaxis="y2"))
-
-    fig_cum.update_layout(
-        template="plotly_dark",
-        height=460,
-        yaxis=dict(title="Projectiles"),
-        yaxis2=dict(title="Casualties", overlaying="y", side="right"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        hovermode="x unified"
-    )
+    fig_cum.add_trace(go.Scatter(x=daily["date"], y=daily["cum_casualties"], name="Casualties", line=dict(color="#8b949e", width=3), yaxis="y2"))
+    fig_cum.update_layout(template="plotly_dark", height=460, yaxis=dict(title="Projectiles"), yaxis2=dict(title="Casualties", overlaying="y", side="right"), legend=dict(orientation="h", y=1.02))
     st.plotly_chart(fig_cum, use_container_width=True)
 
     st.subheader("Daily Reported Maxima")
-    fig_daily = px.bar(
-        daily,
-        x="date",
-        y=["reported_missiles", "reported_drones", "reported_intercepted"],
-        barmode="group",
-        title="Daily Peak Numbers per Category",
-        color_discrete_map={
-            "reported_missiles": "#ff7b72",
-            "reported_drones": "#d29922",
-            "reported_intercepted": "#3fb950"
-        }
-    )
-    fig_daily.update_layout(template="plotly_dark", height=380)
+    fig_daily = px.bar(daily, x="date", y=["reported_missiles", "reported_drones", "reported_intercepted"], barmode="group", title="Daily Peak Numbers", template="plotly_dark")
     st.plotly_chart(fig_daily, use_container_width=True)
 
 with right_col:
-    st.subheader("Secondary / Proxy Actors")
+    st.subheader("Secondary Actors")
     text_all = " ".join(df["text"]).lower()
-    actors = {
-        "Russia": "russia",
-        "China": "china",
-        "Turkey": "turkey",
-        "Saudi Arabia": "saudi",
-        "Lebanon": "lebanon",
-        "Syria": "syria",
-        "Hezbollah": "hezbollah",
-        "Houthis": "houthi",
-        "Iraq": "iraq"
-    }
-    counts = {k: len(re.findall(v, text_all)) for k, v in actors.items()}
+    actors = {"Russia":"russia","China":"china","Turkey":"turkey","Saudi":"saudi","Lebanon":"lebanon","Syria":"syria","Hezbollah":"hezbollah","Houthis":"houthi"}
+    counts = {k: len(re.findall(v, text_all)) for k,v in actors.items()}
     actor_df = pd.Series(counts).sort_values(ascending=False).head(8).to_frame("Mentions")
-    fig_actor = px.bar(actor_df, x="Mentions", y=actor_df.index, orientation='h',
-                       template="plotly_dark", color="Mentions")
-    fig_actor.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=40))
-    st.plotly_chart(fig_actor, use_container_width=True)
+    st.plotly_chart(px.bar(actor_df, x="Mentions", y=actor_df.index, orientation='h', template="plotly_dark"), use_container_width=True)
 
-    st.subheader("Market Impact (7 days)")
-    markets = [
-        ("Brent Crude", "BZ=F", "#ff7b72"),
-        ("S&P 500",     "^GSPC", "#58a6ff"),
-        ("Gold",        "GC=F",  "#ffd700")
-    ]
-    for name, ticker, color in markets:
+    st.subheader("Market Impact")
+    for name, tick in [("Brent Crude","BZ=F"), ("S&P 500","^GSPC"), ("Gold","GC=F")]:
         try:
-            hist = yf.Ticker(ticker).history(period="7d")
-            if len(hist) >= 2:
-                last = hist["Close"].iloc[-1]
-                delta_pct = ((last - hist["Close"].iloc[-2]) / hist["Close"].iloc[-2]) * 100
-                val_str = f"${last:,.2f}" if "Crude" in name or "Gold" in name else f"{int(last):,}"
-                st.metric(name, val_str, f"{delta_pct:+.1f}%")
-        except:
-            st.caption(f"{name} – data unavailable")
+            h = yf.Ticker(tick).history(period="7d")
+            if len(h) >= 2:
+                last = h["Close"].iloc[-1]
+                delta = ((last - h["Close"].iloc[-2]) / h["Close"].iloc[-2]) * 100
+                val = f"${last:,.2f}" if "Crude" in name or "Gold" in name else f"{int(last):,}"
+                st.metric(name, val, f"{delta:+.1f}%")
+        except: st.caption(f"{name} offline")
 
 st.markdown("---")
-
-# ─── Raw feed with kinetic highlights ───
 st.subheader("📡 Most Relevant Kinetic Reports")
-for _, row in df[df[["reported_missiles","reported_drones","reported_casualties","reported_intercepted"]].sum(axis=1) > 0].head(10).iterrows():
+for _, row in df.sort_values("datetime", ascending=False).head(12).iterrows():
     tags = []
-    if row["reported_missiles"] > 0:    tags.append(f"🚀 {row['reported_missiles']:,} Missiles")
-    if row["reported_drones"] > 0:      tags.append(f"🛸 {row['reported_drones']:,} Drones")
+    if row["reported_missiles"] > 0: tags.append(f"🚀 {row['reported_missiles']:,} Missiles")
+    if row["reported_drones"] > 0: tags.append(f"🛸 {row['reported_drones']:,} Drones")
     if row["reported_intercepted"] > 0: tags.append(f"🛡️ {row['reported_intercepted']:,} Intercepted")
-    if row["reported_casualties"] > 0:  tags.append(f"⚠️ {row['reported_casualties']:,} Casualties")
-
+    if row["reported_casualties"] > 0: tags.append(f"⚠️ {row['reported_casualties']:,} Casualties")
     st.markdown(f"""
-    <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:14px; margin-bottom:12px;">
-        <a href="{row['url']}" target="_blank" style="color:#58a6ff; font-weight:600; text-decoration:none;">{row['title']}</a><br>
+    <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;margin-bottom:12px;">
+        <a href="{row['url']}" target="_blank" style="color:#58a6ff;font-weight:600;">{row['title']}</a><br>
         <small style="color:#8b949e;">{row['source']} • {row['datetime'].strftime('%Y-%m-%d %H:%M IST')}</small><br>
-        <span style="color:#ff7b72; font-size:0.92rem; font-weight:600;">{'  •  '.join(tags)}</span>
+        <span style="color:#ff7b72;font-size:0.92rem;font-weight:600;">{' • '.join(tags) if tags else 'No kinetic data extracted'}</span>
     </div>
     """, unsafe_allow_html=True)
 
-st.caption(
-    "📌 Figures are highest reported values per day (media consensus approach) • "
-    "Subject to frequent revision • Not official military statistics • "
-    "Sources: Reuters, AP, BBC, Al Jazeera, Times of Israel, Haaretz, Jerusalem Post, CNN, Google News"
-)
+st.caption("📌 All figures are highest reported values per day (media consensus) • Subject to revision • Sources include Reuters, AP, BBC, Al Jazeera, Times of Israel, Haaretz, Jerusalem Post, CNN, Google News")

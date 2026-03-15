@@ -116,20 +116,27 @@ ACTOR_LABELS = ["US", "Israel", "Iran", "Global"]
 
 SOURCE_PRIORITY = {
     "reuters": 100,
-    "associated press": 95,
-    "ap": 95,
-    "bbc": 90,
-    "financial times": 88,
-    "wall street journal": 88,
-    "washington post": 86,
-    "the guardian": 84,
+    "associated press": 96,
+    "apnews": 96,
+    "ap": 94,
+    "bbc": 92,
+    "financial times": 90,
+    "wall street journal": 90,
+    "wsj": 90,
+    "washington post": 88,
+    "the guardian": 86,
     "al jazeera": 84,
     "cnn": 80,
     "cbs": 78,
     "abc": 78,
     "nbc": 78,
-    "fox": 70,
+    "bloomberg": 88,
+    "csis": 74,
+    "times of israel": 74,
+    "haaretz": 76,
 }
+TRUSTED_SOURCE_MIN = 84
+PROJECTILE_MAX_REASONABLE = {"missiles_fired": 1200, "drones_fired": 5000}
 
 TARGET_DICT = {
     "US": [
@@ -206,6 +213,10 @@ def domain_source_weight(source_name: str, url: str) -> int:
         if key in text:
             return val
     return 50
+
+
+def is_trusted_source(source_name: str, url: str) -> bool:
+    return domain_source_weight(source_name, url) >= TRUSTED_SOURCE_MIN
 
 
 def safe_parse_date(value):
@@ -301,7 +312,19 @@ def choose_actor(text: str, fallback: str = "Global") -> str:
 
 def looks_like_damage_sentence(text: str) -> bool:
     lower = text.lower()
-    return any(k in lower for k in LOSS_WORDS) and not any(k in lower for k in PRICE_EXCLUSION_WORDS)
+    bad = any(k in lower for k in PRICE_EXCLUSION_WORDS)
+    budgetish = any(k in lower for k in ["budget deficit", "budget", "spending plan", "fiscal", "government spending"]) and "war cost" not in lower
+    return any(k in lower for k in LOSS_WORDS) and not bad and not budgetish
+
+
+def looks_like_projectile_count_context(text: str) -> bool:
+    lower = text.lower()
+    bad_phrases = [
+        "cost of", "priced at", "worth", "per drone", "per missile", "take on", "vs patriots",
+        "interceptors", "interceptor", "stockpile", "inventory", "capabilities", "range of",
+        "can carry", "payload", "drone model", "drone type", "missile type", "manufactured",
+    ]
+    return not any(p in lower for p in bad_phrases)
 
 
 def split_sentences_with_context(text: str):
@@ -371,13 +394,26 @@ class WarFactExtractor:
                     continue
 
                 if metric in {"missiles_fired", "drones_fired"}:
+                    if not looks_like_projectile_count_context(ctx):
+                        continue
+                    if num > PROJECTILE_MAX_REASONABLE[metric]:
+                        continue
                     actor = self._infer_attacker_actor(ctx)
                     target = self._infer_target_actor(ctx, default="Global")
                     if metric == "missiles_fired" and ("interceptor" in ctx or "intercepted" in ctx):
                         confidence -= 0.12
+                    if not is_trusted_source(article.get("source",""), article.get("url","")):
+                        confidence -= 0.18
+                    if actor == "Global":
+                        confidence -= 0.12
                 else:
                     target = self._infer_target_actor(ctx, default="Global")
                     actor = self._infer_attacker_actor(ctx, default="Global")
+                    if metric in {"casualties", "injuries"} and not is_trusted_source(article.get("source",""), article.get("url","")):
+                        confidence -= 0.08
+
+                if confidence < 0.42:
+                    continue
 
                 facts.append({
                     "article_hash": article["hash"],
@@ -406,8 +442,14 @@ class WarFactExtractor:
                         continue
                     target = self._infer_target_actor(ctx, default="Global")
                     actor = self._infer_attacker_actor(ctx, default="Global")
-                    conf = 0.78 if any(x in ctx for x in ["damage", "loss", "cost", "insured", "compensation"]) else 0.55
+                    kind = "direct_damage" if any(x in ctx for x in ["damage", "repair", "insured", "compensation", "destroyed", "property"]) else "war_spend"
+                    conf = 0.82 if kind == "direct_damage" else 0.68
+                    if not is_trusted_source(article.get("source",""), article.get("url","")):
+                        conf -= 0.18
+                    if conf < 0.45:
+                        continue
                     facts.append({
+                        "loss_kind": kind,
                         "article_hash": article["hash"],
                         "article_title": article["title"],
                         "article_url": article["url"],
@@ -439,6 +481,9 @@ class WarFactExtractor:
                         mult = 1e9
                     elif scale in {"trillion", "t", "tn"}:
                         mult = 1e12
+                    conf_local = 0.58 if is_trusted_source(article.get("source",""), article.get("url","")) else 0.38
+                    if conf_local < 0.45:
+                        continue
                     facts.append({
                         "article_hash": article["hash"],
                         "article_title": article["title"],
@@ -450,11 +495,12 @@ class WarFactExtractor:
                         "context": window,
                         "metric": "economic_loss_local",
                         "subtype": cur,
+                        "loss_kind": "direct_damage" if any(x in ctx for x in ["damage", "repair", "insured", "compensation", "destroyed", "property"]) else "war_spend",
                         "actor": actor,
                         "target": target,
                         "value": float(val * mult),
                         "unit": cur,
-                        "confidence": 0.55,
+                        "confidence": conf_local,
                     })
 
         return facts
@@ -674,6 +720,43 @@ def build_live_dataset(max_articles: int, fetch_full: bool) -> tuple[pd.DataFram
 # =========================
 # FACT RESOLUTION
 # =========================
+
+def resolve_metric_value(actor_df: pd.DataFrame, metric_name: str) -> float:
+    if actor_df.empty:
+        return 0.0
+    actor_df = actor_df.copy()
+    actor_df["day"] = pd.to_datetime(actor_df["published_at"]).dt.date
+    actor_df["trusted"] = actor_df["source_weight"] >= TRUSTED_SOURCE_MIN
+
+    # For projectile counts and direct losses, require at least one trusted source or two agreeing sources
+    actor_df = actor_df.sort_values(["confidence", "source_weight", "published_at", "value"], ascending=[False, False, False, False])
+
+    if metric_name in {"missiles_fired", "drones_fired"}:
+        actor_df = actor_df[actor_df["value"] <= PROJECTILE_MAX_REASONABLE[metric_name]]
+        if actor_df.empty:
+            return 0.0
+
+    # Build rough value clusters (within 20% or small absolute tolerance)
+    values = actor_df["value"].tolist()
+    best = None
+    for v in values[:12]:
+        tol = max(5.0, v * 0.2)
+        cluster = actor_df[(actor_df["value"] >= v - tol) & (actor_df["value"] <= v + tol)]
+        support = cluster["source"].nunique()
+        trusted = int(cluster["trusted"].sum())
+        score = cluster["confidence"].sum() + cluster["source_weight"].sum() / 100.0 + support * 0.8 + trusted * 1.2
+        cand = {"value": cluster["value"].median(), "score": score, "support": support, "trusted": trusted}
+        if best is None or cand["score"] > best["score"]:
+            best = cand
+
+    if best is None:
+        return 0.0
+    # If nothing is trusted and no corroboration, stay conservative
+    if best["trusted"] == 0 and best["support"] < 2:
+        return 0.0
+    return float(best["value"])
+
+
 def resolve_fact_rollup(facts_df: pd.DataFrame) -> dict:
     empty = {
         "missiles": {a: 0 for a in ACTOR_LABELS},
@@ -681,55 +764,39 @@ def resolve_fact_rollup(facts_df: pd.DataFrame) -> dict:
         "casualties": {a: 0 for a in ACTOR_LABELS},
         "injuries": {a: 0 for a in ACTOR_LABELS},
         "loss_usd_m": {a: 0.0 for a in ACTOR_LABELS},
+        "loss_direct_usd_m": {a: 0.0 for a in ACTOR_LABELS},
+        "loss_war_spend_usd_m": {a: 0.0 for a in ACTOR_LABELS},
     }
     if facts_df.empty:
         return empty
 
     rollup = json.loads(json.dumps(empty))
 
-    def aggregate(metric_name: str, bucket: str, actor_field: str = "target"):
+    def aggregate(metric_name: str, bucket: str, actor_field: str = "target", extra_filter=None):
         subset = facts_df[facts_df["metric"] == metric_name].copy()
+        if extra_filter is not None:
+            subset = subset[extra_filter(subset)]
         if subset.empty:
             return
-        # Prefer higher confidence and source weight, then latest, then max value
-        subset = subset.sort_values(["confidence", "source_weight", "published_at", "value"], ascending=[False, False, False, False])
         for actor in ACTOR_LABELS:
-            if actor == "Global":
-                actor_df = subset
-            else:
-                actor_df = subset[subset[actor_field] == actor]
-            if actor_df.empty:
-                rollup[bucket][actor] = 0 if bucket != "loss_usd_m" else 0.0
-                continue
-
-            # Robust estimator: weighted 80th percentile-ish by taking top consensus cluster.
-            vals = actor_df["value"].tolist()
-            top = sorted(vals, reverse=True)[: min(7, len(vals))]
-            if not top:
-                value = 0
-            elif len(top) == 1:
-                value = top[0]
-            else:
-                median_top = statistics.median(top)
-                # cap outliers that are >3x the median of top sample
-                filtered = [v for v in top if v <= max(median_top * 3, median_top + 50)]
-                value = max(filtered) if filtered else median_top
-            rollup[bucket][actor] = float(value)
+            actor_df = subset if actor == "Global" else subset[subset[actor_field] == actor]
+            rollup[bucket][actor] = resolve_metric_value(actor_df, metric_name)
 
     aggregate("missiles_fired", "missiles", actor_field="actor")
     aggregate("drones_fired", "drones", actor_field="actor")
     aggregate("casualties", "casualties", actor_field="target")
     aggregate("injuries", "injuries", actor_field="target")
     aggregate("economic_loss_usd_m", "loss_usd_m", actor_field="target")
+    aggregate("economic_loss_usd_m", "loss_direct_usd_m", actor_field="target", extra_filter=lambda d: d.get("loss_kind","")=="direct_damage")
+    aggregate("economic_loss_usd_m", "loss_war_spend_usd_m", actor_field="target", extra_filter=lambda d: d.get("loss_kind","")!="direct_damage")
 
-    # keep global as overall max/sum depending on metric
-    rollup["missiles"]["Global"] = max(rollup["missiles"].values())
-    rollup["drones"]["Global"] = max(rollup["drones"].values())
-    rollup["casualties"]["Global"] = max(rollup["casualties"].values())
-    rollup["injuries"]["Global"] = max(rollup["injuries"].values())
-    rollup["loss_usd_m"]["Global"] = sum(v for k, v in rollup["loss_usd_m"].items() if k != "Global")
+    rollup["missiles"]["Global"] = max(rollup["missiles"][k] for k in ["US", "Israel", "Iran"])
+    rollup["drones"]["Global"] = max(rollup["drones"][k] for k in ["US", "Israel", "Iran"])
+    rollup["casualties"]["Global"] = max(rollup["casualties"][k] for k in ["US", "Israel", "Iran", "Global"])
+    rollup["injuries"]["Global"] = max(rollup["injuries"][k] for k in ["US", "Israel", "Iran", "Global"])
+    for b in ["loss_usd_m", "loss_direct_usd_m", "loss_war_spend_usd_m"]:
+        rollup[b]["Global"] = sum(rollup[b][k] for k in ["US", "Israel", "Iran"])
     return rollup
-
 
 
 def make_timeline(facts_df: pd.DataFrame) -> pd.DataFrame:
@@ -865,7 +932,7 @@ k1, k2, k3, k4, k5 = st.columns(5)
 kpis = [
     (k1, "Missiles fired", f"{int(rollup['missiles']['US'] + rollup['missiles']['Israel'] + rollup['missiles']['Iran']):,}", "Resolved from actor-attributed reports"),
     (k2, "Drones fired", f"{int(rollup['drones']['US'] + rollup['drones']['Israel'] + rollup['drones']['Iran']):,}", "Actor-attributed drone salvos"),
-    (k3, "Economic loss", format_money_m(rollup['loss_usd_m']['Global']), "USD-only direct loss evidence"),
+    (k3, "Economic loss", format_money_m(rollup['loss_usd_m']['Global']), "Resolved direct damage + war spend"),
     (k4, "Global casualties", f"{int(rollup['casualties']['Global']):,}", "Best-supported reported toll"),
     (k5, "Global injuries", f"{int(rollup['injuries']['Global']):,}", "Best-supported reported injuries"),
 ]
@@ -934,11 +1001,12 @@ with left:
         st.markdown("<div class='section-title'>Economic loss by impacted side</div>", unsafe_allow_html=True)
         loss_df = pd.DataFrame({
             "Target": ["US", "Israel", "Iran", "Global spillover"],
-            "USD_M": [rollup["loss_usd_m"]["US"], rollup["loss_usd_m"]["Israel"], rollup["loss_usd_m"]["Iran"], max(0.0, rollup["loss_usd_m"]["Global"] - rollup["loss_usd_m"]["US"] - rollup["loss_usd_m"]["Israel"] - rollup["loss_usd_m"]["Iran"])]
+            "USD_M": [rollup["loss_usd_m"]["US"], rollup["loss_usd_m"]["Israel"], rollup["loss_usd_m"]["Iran"], 0.0]
         })
         fig3 = px.pie(loss_df, names="Target", values="USD_M", hole=0.58, template="plotly_dark", height=320)
         fig3.update_layout(margin=dict(l=8, r=8, t=8, b=8), paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig3, use_container_width=True)
+        st.caption("Losses combine direct damage and war-spend estimates from trusted reporting; low-quality single-source claims are filtered out.")
 
     st.markdown("<div class='section-title'>Narrative momentum</div>", unsafe_allow_html=True)
     if not momentum_df.empty:

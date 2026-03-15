@@ -118,9 +118,9 @@ SOURCE_PRIORITY = {
     "reuters": 100,
     "associated press": 96,
     "apnews": 96,
-    "ap": 94,
     "bbc": 92,
     "financial times": 90,
+    "ft.com": 90,
     "wall street journal": 90,
     "wsj": 90,
     "washington post": 88,
@@ -137,6 +137,11 @@ SOURCE_PRIORITY = {
 }
 TRUSTED_SOURCE_MIN = 84
 PROJECTILE_MAX_REASONABLE = {"missiles_fired": 1200, "drones_fired": 5000}
+LOW_QUALITY_DOMAINS = {"palestinechronicle.com", "middleeastmonitor.com", "newarab.com", "middleeasteye.net"}
+
+def is_low_quality_url(url: str) -> bool:
+    host = urlparse(url).netloc.lower().replace("www.", "")
+    return any(dom in host for dom in LOW_QUALITY_DOMAINS)
 
 TARGET_DICT = {
     "US": [
@@ -201,10 +206,41 @@ LOCAL_MONEY_RE = re.compile(
 )
 
 
-def normalize_source_name(name: str) -> str:
-    if not name:
-        return "Unknown"
-    return re.sub(r"\s+", " ", name).strip()
+def pretty_source_from_url(url: str) -> str:
+    netloc = urlparse(url).netloc.lower().replace("www.", "")
+    mapping = {
+        "reuters.com": "Reuters",
+        "apnews.com": "Associated Press",
+        "bbc.com": "BBC",
+        "bbc.co.uk": "BBC",
+        "aljazeera.com": "Al Jazeera",
+        "bloomberg.com": "Bloomberg",
+        "wsj.com": "Wall Street Journal",
+        "ft.com": "Financial Times",
+        "theguardian.com": "The Guardian",
+        "washingtonpost.com": "The Washington Post",
+        "cnn.com": "CNN",
+        "cbsnews.com": "CBS News",
+        "abcnews.go.com": "ABC News",
+        "nbcnews.com": "NBC News",
+        "csis.org": "CSIS",
+    }
+    for dom, pretty in mapping.items():
+        if dom in netloc:
+            return pretty
+    return netloc.split(":")[0]
+
+
+def normalize_source_name(name: str, url: str = "") -> str:
+    name = re.sub(r"\s+", " ", (name or "")).strip()
+    if not name or name.lower() in {"unknown", "", "us", "gb", "il", "ir"}:
+        return pretty_source_from_url(url) if url else "Unknown"
+    low = name.lower()
+    if low in {"reuters world", "reuters business"}:
+        return "Reuters"
+    if low.startswith("ap ") or low == "ap top news":
+        return "Associated Press"
+    return name
 
 
 def domain_source_weight(source_name: str, url: str) -> int:
@@ -320,11 +356,14 @@ def looks_like_damage_sentence(text: str) -> bool:
 def looks_like_projectile_count_context(text: str) -> bool:
     lower = text.lower()
     bad_phrases = [
-        "cost of", "priced at", "worth", "per drone", "per missile", "take on", "vs patriots",
-        "interceptors", "interceptor", "stockpile", "inventory", "capabilities", "range of",
+        "cost of", "priced at", "worth", "per drone", "per missile",
+        "interceptors", "interceptor", "stockpile", "inventory", "capabilities",
         "can carry", "payload", "drone model", "drone type", "missile type", "manufactured",
+        " km", "kilometre", "kilometer", "range", "warheads", "payload capacity"
     ]
-    return not any(p in lower for p in bad_phrases)
+    if any(p in lower for p in bad_phrases):
+        return False
+    return any(v in lower for v in ATTACKER_VERBS + ["attack", "strike", "retaliat", "salvo", "barrage"])
 
 
 def split_sentences_with_context(text: str):
@@ -351,6 +390,41 @@ class WarFactExtractor:
             ctx = window.lower()
 
             # 1) missiles / drones / casualties
+            for cm in COMBINED_PROJECTILE_RE.finditer(sent):
+                combo = [
+                    (cm.group("num1"), cm.group("unit1"), cm.group("prefix1") or "", bool(cm.group("plus1")), "missiles_fired"),
+                    (cm.group("num2"), cm.group("unit2"), cm.group("prefix2") or "", bool(cm.group("plus2")), "drones_fired"),
+                ]
+                for raw_num, unit, prefix, plus, forced_metric in combo:
+                    num = parse_textual_number(raw_num)
+                    if num is None or num <= 0:
+                        continue
+                    if prefix.lower() in {"over", "more than", "at least"} or plus:
+                        num = math.floor(num)
+                    if num > PROJECTILE_MAX_REASONABLE[forced_metric]:
+                        continue
+                    if not looks_like_projectile_count_context(ctx):
+                        continue
+                    actor = self._infer_attacker_actor(ctx)
+                    target = self._infer_target_actor(ctx, default="Global")
+                    confidence = 0.83 if is_trusted_source(article.get("source",""), article.get("url","")) else 0.60
+                    facts.append({
+                        "article_hash": article["hash"],
+                        "article_title": article["title"],
+                        "article_url": article["url"],
+                        "source": article["source"],
+                        "source_weight": source_weight,
+                        "published_at": article["datetime"],
+                        "sentence": sent,
+                        "context": window,
+                        "metric": forced_metric,
+                        "subtype": unit.lower(),
+                        "actor": actor,
+                        "target": target,
+                        "value": float(num),
+                        "unit": "count",
+                        "confidence": confidence,
+                    })
             for m in QUANT_RE.finditer(sent):
                 raw_num = m.group("num")
                 unit = m.group("unit").lower()
@@ -570,7 +644,7 @@ def fetch_gdelt_articles(max_records: int = 120) -> list[dict]:
             out.append({
                 "title": clean_text(art.get("title", "")),
                 "url": url,
-                "source": normalize_source_name(art.get("sourceCountry", "") or urlparse(url).netloc),
+                "source": normalize_source_name(art.get("domain", "") or urlparse(url).netloc, url),
                 "datetime": safe_parse_date(art.get("seendate") or art.get("socialimage") or datetime.now(UTC).isoformat()),
                 "summary": clean_text(art.get("snippet", "")),
                 "source_hint": art.get("domain", urlparse(url).netloc),
@@ -605,7 +679,7 @@ def fetch_rss_articles(limit_per_feed: int = 50) -> list[dict]:
             out.append({
                 "title": clean_text(e.get("title", "")),
                 "url": link,
-                "source": normalize_source_name(e.get("source", {}).get("title") or label),
+                "source": normalize_source_name(e.get("source", {}).get("title") or label, link),
                 "datetime": safe_parse_date(e.get("published") or e.get("updated") or datetime.now(UTC).isoformat()),
                 "summary": clean_text(e.get("summary", "")),
                 "source_hint": label,
@@ -640,7 +714,7 @@ def fetch_newsapi_articles(page_size: int = 80) -> list[dict]:
         out.append({
             "title": clean_text(a.get("title", "")),
             "url": link,
-            "source": normalize_source_name((a.get("source") or {}).get("name", "NewsAPI")),
+            "source": normalize_source_name((a.get("source") or {}).get("name", "NewsAPI"), link),
             "datetime": safe_parse_date(a.get("publishedAt") or datetime.now(UTC).isoformat()),
             "summary": clean_text(a.get("description", "")),
             "source_hint": "NewsAPI",
@@ -684,6 +758,8 @@ def build_live_dataset(max_articles: int, fetch_full: bool) -> tuple[pd.DataFram
     dedup = {}
     for item in seed:
         url = item["url"]
+        if is_low_quality_url(url):
+            continue
         prev = dedup.get(url)
         if not prev or domain_source_weight(item.get("source", ""), url) > domain_source_weight(prev.get("source", ""), url):
             dedup[url] = item
@@ -754,6 +830,11 @@ def resolve_metric_value(actor_df: pd.DataFrame, metric_name: str) -> float:
     # If nothing is trusted and no corroboration, stay conservative
     if best["trusted"] == 0 and best["support"] < 2:
         return 0.0
+    trusted_df = actor_df[actor_df["trusted"] == True]
+    if not trusted_df.empty:
+        trusted_df = trusted_df.sort_values(["confidence", "source_weight", "published_at", "value"], ascending=[False, False, False, False])
+        if metric_name in {"casualties", "injuries", "missiles_fired", "drones_fired"}:
+            return float(trusted_df.iloc[0]["value"])
     return float(best["value"])
 
 
@@ -790,10 +871,14 @@ def resolve_fact_rollup(facts_df: pd.DataFrame) -> dict:
     aggregate("economic_loss_usd_m", "loss_direct_usd_m", actor_field="target", extra_filter=lambda d: d.get("loss_kind","")=="direct_damage")
     aggregate("economic_loss_usd_m", "loss_war_spend_usd_m", actor_field="target", extra_filter=lambda d: d.get("loss_kind","")!="direct_damage")
 
-    rollup["missiles"]["Global"] = max(rollup["missiles"][k] for k in ["US", "Israel", "Iran"])
-    rollup["drones"]["Global"] = max(rollup["drones"][k] for k in ["US", "Israel", "Iran"])
-    rollup["casualties"]["Global"] = max(rollup["casualties"][k] for k in ["US", "Israel", "Iran", "Global"])
-    rollup["injuries"]["Global"] = max(rollup["injuries"][k] for k in ["US", "Israel", "Iran", "Global"])
+    gm = resolve_metric_value(facts_df[facts_df["metric"] == "missiles_fired"], "missiles_fired")
+    gd = resolve_metric_value(facts_df[facts_df["metric"] == "drones_fired"], "drones_fired")
+    gc = resolve_metric_value(facts_df[facts_df["metric"] == "casualties"], "casualties")
+    gi = resolve_metric_value(facts_df[facts_df["metric"] == "injuries"], "injuries")
+    rollup["missiles"]["Global"] = max(gm, *(rollup["missiles"][k] for k in ["US", "Israel", "Iran"]))
+    rollup["drones"]["Global"] = max(gd, *(rollup["drones"][k] for k in ["US", "Israel", "Iran"]))
+    rollup["casualties"]["Global"] = max(gc, *(rollup["casualties"][k] for k in ["US", "Israel", "Iran", "Global"]))
+    rollup["injuries"]["Global"] = max(gi, *(rollup["injuries"][k] for k in ["US", "Israel", "Iran", "Global"]))
     for b in ["loss_usd_m", "loss_direct_usd_m", "loss_war_spend_usd_m"]:
         rollup[b]["Global"] = sum(rollup[b][k] for k in ["US", "Israel", "Iran"])
     return rollup

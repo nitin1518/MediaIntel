@@ -4,6 +4,6 @@ trafilatura
 pandas
 plotly
 vaderSentiment
-yfinance
 python-dateutil
 nltk>=3.8.1
+yfinance>=0.2.40

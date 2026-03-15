@@ -1,4 +1,4 @@
-# app.py — Professional single-screen dashboard version
+# app.py — Professional single-screen dashboard (corrected formatting issues)
 
 import streamlit as st
 import pandas as pd
@@ -15,7 +15,7 @@ import nltk
 import os
 from nltk.tokenize import sent_tokenize
 
-# Force NLTK data download (fixes previous error)
+# Force NLTK data download at startup (fixes punkt_tab LookupError)
 nltk.download('punkt', quiet=True)
 nltk.download('punkt_tab', quiet=True)
 
@@ -30,7 +30,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ──── Professional Dark Theme + Layout CSS ────
+# ──── Professional Dark Theme CSS ────
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -90,137 +90,184 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ──── Title & Subtitle ────
+# ──── Title ────
 st.title("🌍 Iran – US – Israel Conflict Monitor")
-st.markdown("**Real-time media sentiment & economic impact dashboard** • Powered by RSS aggregation, local NLP & live market data • Updated automatically")
+st.markdown("**Real-time media sentiment & economic impact dashboard** • RSS aggregation + local NLP + live markets")
 
-# ──── Sidebar Controls ────
+# ──── Sidebar ────
 with st.sidebar:
-    st.header("Dashboard Controls")
-    max_articles = st.slider("Max articles", 80, 400, 180, step=20)
-    fetch_full_text = st.checkbox("Extract full article text (better accuracy)", True)
-    auto_refresh = st.checkbox("Auto-refresh every 5 min", True)
+    st.header("Controls")
+    max_articles = st.slider("Max articles to keep", 80, 400, 180, step=20)
+    fetch_full_text = st.checkbox("Extract full article text (better NLP)", True)
+    auto_refresh = st.checkbox("Auto-refresh every 5 minutes", True)
 
     if st.button("🔄 Refresh Now", type="primary", use_container_width=True):
         if "df" in st.session_state:
             del st.session_state.df
         st.rerun()
 
-# ──── Data Fetch & Cache (same as before, abbreviated) ────
-@st.cache_data(ttl=300)
-def fetch_and_process(max_art, full_text):
-    # ... (keep your existing fetch_news logic here – Google RSS + direct feeds + dedup + sentiment)
-    # For brevity: assume it returns df with columns: title, url, source, date, datetime, text, sent_overall, sent_israel_us, sent_iran, hash
-    # Return processed df
-    pass  # ← Replace with your full fetch + compute_sentiment logic from previous versions
+# ─────────────────────────────────────────────────────────────
+#                  DATA FETCHING & PROCESSING
+# ─────────────────────────────────────────────────────────────
 
+@st.cache_data(ttl=300, show_spinner="Fetching latest news...")
+def fetch_news(max_articles, fetch_full):
+    # ------------------- Your existing fetch logic -------------------
+    # For this example I'm putting placeholder – replace with your real implementation
+    # (Google News RSS + direct feeds + deduplication + VADER sentiment)
+
+    # Placeholder – in real code replace this whole function body
+    # with your previous working fetch + sentiment code
+
+    # Example minimal structure:
+    articles = []  # ← fill with real data
+    df = pd.DataFrame(articles)
+
+    # Add sentiment columns (you already have this logic)
+    analyzer = SentimentIntensityAnalyzer()
+    # ... your compute_sentiment function here ...
+
+    return df  # must have: title, url, source, date, datetime, text, sent_overall, sent_israel_us, sent_iran
+
+# Load or fetch data
 if "df" not in st.session_state:
     with st.spinner("Loading latest intelligence…"):
-        st.session_state.df = fetch_and_process(max_articles, fetch_full_text)
+        st.session_state.df = fetch_news(max_articles, fetch_full_text)
         st.session_state.last_update = datetime.now()
 
 df = st.session_state.df
-last = st.session_state.last_update
+last_update = st.session_state.last_update
 
-# ──── KPI Cards (Top Row) ────
-cols = st.columns([1,1,1.2,1])
-with cols[0]:
-    st.markdown(f'<div class="metric-card"><strong>Articles</strong><br><h2>{len(df):,}</h2><small>from 100+ sources</small></div>', unsafe_allow_html=True)
+# ──── KPI CARDS (fixed formatting) ────
+kpi1, kpi2, kpi3, kpi4 = st.columns([1, 1, 1.3, 1])
 
-with cols[1]:
-    avg_tone = df["sent_overall"].mean()
+with kpi1:
+    count_formatted = f"{len(df):,}"
+    st.markdown(
+        f'<div class="metric-card"><strong>Articles</strong><br><h2>{count_formatted}</h2><small>from multiple sources</small></div>',
+        unsafe_allow_html=True
+    )
+
+with kpi2:
+    avg_tone = float(df["sent_overall"].mean()) if not df.empty else 0.0
+    tone_str = f"{avg_tone:.2f}"
     tone_color = "#22c55e" if avg_tone > 0.05 else "#ef4444" if avg_tone < -0.05 else "#94a3b8"
-    st.markdown(f'<div class="metric-card"><strong>Media Tone</strong><br><h2 style="color:{tone_color};">{avg_tone:.2f}</h2><small>(+ = more favorable to US/Israel)</small></div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="metric-card"><strong>Media Tone</strong><br><h2 style="color:{tone_color};">{tone_str}</h2><small>(+ = pro US/Israel)</small></div>',
+        unsafe_allow_html=True
+    )
 
-with cols[2]:
+with kpi3:
     winner = "🇺🇸🇮🇱 US/Israel" if df["sent_israel_us"].mean() > df["sent_iran"].mean() else "🇮🇷 Iran"
-    st.markdown(f'<div class="metric-card"><strong>Current Media Favor</strong><br><h2>{winner}</h2><small>based on sentence-level sentiment</small></div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="metric-card"><strong>Current Media Favor</strong><br><h2>{winner}</h2><small>tone-based</small></div>',
+        unsafe_allow_html=True
+    )
 
-with cols[3]:
-    st.markdown(f'<div class="metric-card"><strong>Last Update</strong><br><span class="live-dot"></span>{last.strftime("%H:%M %d %b")}</div>', unsafe_allow_html=True)
+with kpi4:
+    st.markdown(
+        f'<div class="metric-card"><strong>Last Update</strong><br><span class="live-dot"></span>{last_update.strftime("%H:%M  %d %b")}</div>',
+        unsafe_allow_html=True
+    )
 
 st.markdown("---")
 
-# ──── Main Layout: 2 Big Columns ────
-left_col, right_col = st.columns([7, 3], gap="large")
+# ──── MAIN LAYOUT ────
+left, right = st.columns([7, 3], gap="large")
 
-# ──── LEFT COLUMN ──── (Charts & Trend – takes most space)
-with left_col:
-    st.subheader("Sentiment Trend – Who Appears Stronger in Coverage")
+# LEFT ──────────────────────────────────────────────────────────
+with left:
+    st.subheader("Sentiment Trend – Media Perception Over Time")
 
-    daily = df.groupby("date").agg({
-        "sent_israel_us": "mean",
-        "sent_iran": "mean"
-    }).reset_index()
+    if not df.empty:
+        daily = df.groupby("date").agg({
+            "sent_israel_us": "mean",
+            "sent_iran": "mean"
+        }).reset_index()
 
-    fig_trend = go.Figure()
-    fig_trend.add_trace(go.Scatter(x=daily["date"], y=daily["sent_israel_us"],
-                                   name="US/Israel Tone", line=dict(color="#22c55e", width=3)))
-    fig_trend.add_trace(go.Scatter(x=daily["date"], y=daily["sent_iran"],
-                                   name="Iran Tone", line=dict(color="#ef4444", width=3)))
+        fig_trend = go.Figure()
+        fig_trend.add_trace(go.Scatter(x=daily["date"], y=daily["sent_israel_us"],
+                                       name="US/Israel Tone", line=dict(color="#22c55e", width=3)))
+        fig_trend.add_trace(go.Scatter(x=daily["date"], y=daily["sent_iran"],
+                                       name="Iran Tone", line=dict(color="#ef4444", width=3)))
 
-    fig_trend.update_layout(
-        template="plotly_dark",
-        height=420,
-        margin=dict(l=20, r=20, t=30, b=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        hovermode="x unified"
-    )
-    st.plotly_chart(fig_trend, use_container_width=True)
+        fig_trend.update_layout(
+            template="plotly_dark",
+            height=420,
+            margin=dict(l=20, r=20, t=30, b=20),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig_trend, use_container_width=True)
 
-    # Market Charts – 3 small charts in row
-    st.subheader("Economic & Market Signals")
-    m1, m2, m3 = st.columns(3)
+    # Markets ────────────────────────────────
+    st.subheader("Market Impact Signals")
+    mcol1, mcol2, mcol3 = st.columns(3)
 
     assets = {"Oil (WTI)": "CL=F", "S&P 500": "^GSPC", "Gold": "GC=F"}
 
     for name, ticker in assets.items():
-        with (m1 if name == "Oil (WTI)" else m2 if name == "S&P 500" else m3):
+        col = mcol1 if name == "Oil (WTI)" else mcol2 if name == "S&P 500" else mcol3
+        with col:
             try:
                 tkr = yf.Ticker(ticker)
                 hist = tkr.history(period="14d")
                 if hist.empty or len(hist) < 2:
-                    st.caption(f"No data – {name}")
+                    st.caption(f"No recent data – {name}")
                     continue
 
                 last = float(hist["Close"].iloc[-1])
-                delta = float(hist["Close"].iloc[-1] - hist["Close"].iloc[-2])
+                delta = last - float(hist["Close"].iloc[-2])
 
-                val_fmt = f"${last:,.2f}" if "Oil" in name or "Gold" in name else f"{last:,.0f}"
-                delta_fmt = f"{delta:+,.2f}"
+                val = f"${last:,.2f}" if "Oil" in name or "Gold" in name else f"{int(last):,}"
+                deltastr = f"{delta:+,.2f}"
 
-                st.metric(name, val_fmt, delta_fmt)
+                st.metric(name, val, deltastr)
                 st.line_chart(hist["Close"], height=120, use_container_width=True)
-            except:
+            except Exception as e:
                 st.caption(f"Error – {name}")
 
-# ──── RIGHT COLUMN ──── (Quick info, mentions, recent articles)
-with right_col:
+# RIGHT ─────────────────────────────────────────────────────────
+with right:
     st.subheader("Key Entities Mentioned")
-    all_text = " ".join(df["text"]).lower()
-    entities = {
-        "Russia": all_text.count("russia"), "China": all_text.count("china"),
-        "Turkey": all_text.count("turkey"), "Saudi": all_text.count("saudi"),
-        "Lebanon": all_text.count("lebanon"), "Syria": all_text.count("syria"),
-        "Yemen/Houthis": all_text.count("yemen") + all_text.count("houthi"),
-        "Hezbollah": all_text.count("hezbollah"), "Hamas": all_text.count("hamas"),
-        "Qatar": all_text.count("qatar")
-    }
-    ent_df = pd.DataFrame.from_dict(entities, orient="index", columns=["Mentions"]).sort_values("Mentions", ascending=False).head(10)
-    fig_ent = px.bar(ent_df, y="Mentions", color="Mentions", color_continuous_scale="reds", template="plotly_dark")
-    fig_ent.update_layout(height=320, margin=dict(l=10,r=10,t=10,b=40))
-    st.plotly_chart(fig_ent, use_container_width=True)
 
-    st.subheader("Most Recent Articles")
-    for _, row in df.head(8).iterrows():
-        with st.expander(f"{row['title'][:80]}…"):
-            st.caption(f"{row['source']} • {row['date']} • Tone: {row['sent_overall']:.2f}")
-            st.markdown(f"[Read →]({row['url']})")
-            st.write(row["text"][:300] + "…")
+    if not df.empty:
+        text_all = " ".join(df["text"]).lower()
+        entities = {
+            "Russia": text_all.count("russia"),
+            "China": text_all.count("china"),
+            "Turkey": text_all.count("turkey"),
+            "Saudi": text_all.count("saudi"),
+            "Lebanon": text_all.count("lebanon"),
+            "Syria": text_all.count("syria"),
+            "Yemen/Houthis": text_all.count("yemen") + text_all.count("houthi"),
+            "Hezbollah": text_all.count("hezbollah"),
+            "Hamas": text_all.count("hamas"),
+            "Qatar": text_all.count("qatar")
+        }
+        ent_df = pd.DataFrame.from_dict(entities, orient="index", columns=["Mentions"])\
+                             .sort_values("Mentions", ascending=False).head(10)
 
-# ──── Footer & Auto-refresh ────
+        fig_bar = px.bar(ent_df, y="Mentions", color="Mentions",
+                         color_continuous_scale="reds", template="plotly_dark")
+        fig_bar.update_layout(height=340, margin=dict(l=10,r=10,t=10,b=50))
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    st.subheader("Recent Articles")
+    if not df.empty:
+        for _, row in df.head(7).iterrows():
+            with st.expander(f"{row['title'][:70]}…"):
+                st.caption(f"{row['source']} • {row['date']} • Tone: {row['sent_overall']:.2f}")
+                st.markdown(f"[→ Read]({row['url']})")
+                st.write(row["text"][:280] + "…")
+
+# ──── Footer ────
 st.markdown("---")
-st.caption(f"Last refresh: {last.strftime('%Y-%m-%d %H:%M:%S')} • 100% local/free • RSS + VADER + yfinance • Approximate media analysis • Not financial advice")
+st.caption(
+    f"Last refresh: {last_update.strftime('%Y-%m-%d %H:%M:%S')}  •  "
+    "Fully local & free  •  RSS + VADER + yfinance  •  Approximate media tone analysis  •  Not financial advice"
+)
 
-if auto_refresh and (datetime.now() - last).total_seconds() > 300:
+# Auto-refresh
+if auto_refresh and (datetime.now() - last_update).total_seconds() > 300:
     st.rerun()
